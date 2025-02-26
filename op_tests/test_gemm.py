@@ -60,6 +60,7 @@ def test_gemm(dtype, m, n, k, bias=False, otype=None, scaleA=None, scaleB=None):
 
 test_gemm(torch.float8_e4m3fnuz, 128, 768, 4096, bias=False, otype=torch.bfloat16, scaleA=0.5, scaleB=0.5)
 test_gemm(torch.bfloat16, 128, 32, 8192)
+test_gemm(torch.float8_e4m3fnuz, 2048, 2048, 2048)
 # for dtype in [torch.float16, torch.bfloat16]:
 #     # # qkv_proj
 #     # for (m, n, k) in [(4096, 1280, 8192),
