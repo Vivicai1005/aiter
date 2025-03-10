@@ -14,6 +14,7 @@ from torch.utils import cpp_extension
 from torch.utils.file_baton import FileBaton
 import logging
 import json
+import multiprocessing
 from packaging.version import parse, Version
 
 PREBUILD_KERNELS = False
@@ -46,11 +47,30 @@ else:
     print("aiter is not installed.")
 
 AITER_CSRC_DIR = f'{AITER_ROOT_DIR}/csrc'
+os.environ["AITER_ASM_DIR"] = f'{AITER_ROOT_DIR}/hsa/'
 CK_DIR = os.environ.get("CK_DIR",
                         f"{AITER_ROOT_DIR}/3rdparty/composable_kernel")
-bd_dir = f"{this_dir}/build"
+
+@functools.lru_cache(maxsize=None)
+def get_user_jit_dir():
+    if 'JIT_WORKSPACE_DIR' in os.environ:
+        path = os.getenv('JIT_WORKSPACE_DIR')
+        os.makedirs(path, exist_ok=True)
+        return path
+    else:
+        if os.access(this_dir, os.W_OK):
+            return this_dir
+    home_jit_dir = os.path.expanduser('~') + '/.aiter/' + os.path.basename(this_dir)
+    if not os.path.exists(home_jit_dir):
+        shutil.copytree(this_dir, home_jit_dir)
+    return home_jit_dir
+
+bd_dir = f'{get_user_jit_dir()}/build'
 # copy ck to build, thus hippify under bd_dir
-shutil.copytree(CK_DIR, f'{bd_dir}/ck', dirs_exist_ok=True)
+if multiprocessing.current_process().name == 'MainProcess':
+    shutil.copytree(CK_DIR, f'{bd_dir}/ck', dirs_exist_ok=True)
+    if os.path.exists(f'{bd_dir}/ck/library'):
+        shutil.rmtree(f'{bd_dir}/ck/library')
 CK_DIR = f'{bd_dir}/ck'
 
 
@@ -133,8 +153,8 @@ def build_module(md_name, srcs, flags_extra_cc, flags_extra_hip, blob_gen_cmd, e
         opbd_dir = f'{op_dir}/build'
         src_dir = f'{op_dir}/build/srcs'
         os.makedirs(src_dir, exist_ok=True)
-        if os.path.exists(f'{this_dir}/{md_name}.so'):
-            os.remove(f'{this_dir}/{md_name}.so')
+        if os.path.exists(f'{get_user_jit_dir()}/{md_name}.so'):
+            os.remove(f'{get_user_jit_dir()}/{md_name}.so')
 
         sources = rename_cpp_to_cu(srcs, src_dir)
 
@@ -166,7 +186,7 @@ def build_module(md_name, srcs, flags_extra_cc, flags_extra_hip, blob_gen_cmd, e
         if hip_version > Version('6.2.41132'):
             flags_hip += ["-mllvm", "-amdgpu-early-inline-all=true",
                           "-mllvm", "-amdgpu-function-calls=false"]
-        if hip_version > Version('6.2.41133') and hip_version < Version('6.3.00000'):
+        if hip_version > Version('6.2.41133'):
             flags_hip += ["-mllvm", "-amdgpu-coerce-illegal-types=1"]
 
         flags_cc += flags_extra_cc
@@ -219,11 +239,11 @@ def build_module(md_name, srcs, flags_extra_cc, flags_extra_hip, blob_gen_cmd, e
             with_cuda=True,
             is_python_module=True,
         )
-        shutil.copy(f'{opbd_dir}/{md_name}.so', f'{this_dir}')
+        shutil.copy(f'{opbd_dir}/{md_name}.so', f'{get_user_jit_dir()}')
     except Exception as e:
         logger.error('failed build jit [{}]\n-->[History]: {}'.format(
             md_name,
-            ''.join(traceback.format_exception(*sys.exc_info()))
+            '-->'.join(traceback.format_exception(*sys.exc_info()))
         ))
         sys.exit()
     logger.info(
@@ -244,9 +264,9 @@ def get_args_of_build(ops_name: str, exclue=[]):
 
     def convert(d_ops: dict):
         # judge isASM
-        if d_ops["isASM"].lower() == "true":
-            d_ops["flags_extra_hip"].append(
-                "rf'-DAITER_ASM_DIR=\\\"{AITER_ROOT_DIR}/hsa/\\\"'")
+        # if d_ops["isASM"].lower() == "true":
+        #     d_ops["flags_extra_hip"].append(
+        #         "rf'-DAITER_ASM_DIR=\\\"{AITER_ROOT_DIR}/hsa/\\\"'")
         del d_ops["isASM"]
         for k, val in d_ops.items():
             if isinstance(val, list):
@@ -338,7 +358,7 @@ def compile_ops(_md_name: str, fc_name: Optional[str] = None):
 
                 def getTensorInfo(el):
                     if isinstance(el, torch.Tensor):
-                        return f'{el.shape} {el.dtype}'
+                        return f'{el.shape} {el.dtype} {hex(el.data_ptr())}'
                     return el
 
                 callargs = [
